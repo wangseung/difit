@@ -70,8 +70,17 @@ interface ServerOptions {
 const GENERATED_STATUS_CACHE_TTL_MS = 60_000;
 const MAX_DIFF_CACHE_ENTRIES = 8;
 
-function createDiffCacheKey(selection: DiffSelection, ignoreWhitespace: boolean) {
-  return `${getDiffSelectionKey(selection)}\u0000${ignoreWhitespace ? '1' : '0'}`;
+// Keyed by resolved commit hashes so rebase/reset/commit never serve a stale diff.
+// Unresolvable refs fall back to the symbolic key; parseDiff then reports the real error.
+async function createDiffCacheKey(
+  parser: GitDiffParser,
+  selection: DiffSelection,
+  ignoreWhitespace: boolean,
+) {
+  const identity = await parser
+    .getDiffIdentity(selection)
+    .catch(() => getDiffSelectionKey(selection));
+  return `${identity}\u0000${ignoreWhitespace ? '1' : '0'}`;
 }
 
 function getCachedDiffResponse(
@@ -188,7 +197,7 @@ export async function startServer(
     );
     setCachedDiffResponse(
       diffDataCache,
-      createDiffCacheKey(initialSelection, initialIgnoreWhitespace),
+      await createDiffCacheKey(parser, initialSelection, initialIgnoreWhitespace),
       initialDiffData,
     );
   }
@@ -197,7 +206,6 @@ export async function startServer(
   const invalidateCache = () => {
     diffDataCache.clear();
     generatedStatusCache.clear();
-    parser.clearResolvedCommitCache();
   };
 
   // Track current revisions for cache invalidation
@@ -321,10 +329,16 @@ export async function startServer(
 
     let responseDiffData = initialDiffData;
     if (!options.stdinDiff) {
-      const cacheKey = createDiffCacheKey(requestedSelection, ignoreWhitespace);
+      const cacheKey = await createDiffCacheKey(parser, requestedSelection, ignoreWhitespace);
       const cached = getCachedDiffResponse(diffDataCache, cacheKey);
       if (cached) {
-        responseDiffData = cached;
+        // Different symbolic refs (HEAD vs branch name) can share an entry; echo this request's refs
+        responseDiffData = {
+          ...cached,
+          requestedBaseCommitish: requestedSelection.baseCommitish,
+          requestedTargetCommitish: requestedSelection.targetCommitish,
+          requestedBaseMode: requestedSelection.baseMode,
+        };
       } else {
         try {
           responseDiffData = await parser.parseDiff(
@@ -397,7 +411,8 @@ export async function startServer(
       const normalizedFilepath = filepathResult.path;
 
       const ref = (req.query.ref as string) || currentSelection.targetCommitish || 'HEAD';
-      const cacheKey = `${ref}:${normalizedFilepath}`;
+      const resolvedRef = await parser.resolveCommitish(ref).catch(() => ref);
+      const cacheKey = `${resolvedRef}:${normalizedFilepath}`;
       const now = Date.now();
       const cached = generatedStatusCache.get(cacheKey);
       if (cached && cached.expiresAt > now) {
@@ -468,7 +483,7 @@ export async function startServer(
         generatedStatusCache.clear();
         setCachedDiffResponse(
           diffDataCache,
-          createDiffCacheKey(selection, initialIgnoreWhitespace),
+          await createDiffCacheKey(parser, selection, initialIgnoreWhitespace),
           diffData,
         );
         return true;

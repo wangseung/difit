@@ -85,7 +85,13 @@ vi.mock('./git-diff.js', () => {
       isGenerated: true,
       source: 'content',
     });
-    clearResolvedCommitCache = vi.fn();
+    getDiffIdentity = vi.fn(
+      (selection: { baseCommitish: string; targetCommitish: string; baseMode?: string }) =>
+        Promise.resolve(
+          `${selection.baseCommitish}:${selection.targetCommitish}:${selection.baseMode ?? ''}`,
+        ),
+    );
+    resolveCommitish = vi.fn((ref: string) => Promise.resolve(ref));
     getRevisionOptions = vi.fn().mockResolvedValue({
       branches: [{ name: 'main', current: true }],
       commits: [{ hash: 'abc1234', shortHash: 'abc1234', message: 'Test commit' }],

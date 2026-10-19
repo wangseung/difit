@@ -16,8 +16,6 @@ import { isGeneratedFile } from './generated-file-check.js';
 export class GitDiffParser {
   private git: SimpleGit;
   private repoPath: string;
-  private readonly resolvedCommitCache = new Map<string, { value: string; expiresAt: number }>();
-  private static readonly RESOLVED_COMMIT_CACHE_TTL_MS = 5_000;
   private static readonly GENERATED_HEADER_SCAN_BYTES = 4 * 1024;
   private static readonly GITATTRIBUTES_CHECK_CHUNK_SIZE = 200;
 
@@ -729,26 +727,21 @@ export class GitDiffParser {
     }
   }
 
+  // Always re-resolved: branch refs move on commit/rebase/reset and callers key caches off the result
   async resolveCommitish(commitish: string): Promise<string> {
-    const now = Date.now();
-    const cached = this.resolvedCommitCache.get(commitish);
-    if (cached && cached.expiresAt > now) {
-      return cached.value;
-    }
-
     const hash = await this.git.revparse([commitish]);
-    const value = hash.substring(0, 7);
-
-    this.resolvedCommitCache.set(commitish, {
-      value,
-      expiresAt: now + GitDiffParser.RESOLVED_COMMIT_CACHE_TTL_MS,
-    });
-
-    return value;
+    return hash.substring(0, 7);
   }
 
-  clearResolvedCommitCache(): void {
-    this.resolvedCommitCache.clear();
+  // Identity of what parseDiff would compare: resolved hashes, not symbolic refs.
+  // Working-tree targets ('.', 'staged', 'working') stay literal; the file watcher invalidates those.
+  async getDiffIdentity(selection: DiffSelection): Promise<string> {
+    const base = await this.git.revparse([await this.resolveBaseCommitish(selection)]);
+    const { targetCommitish } = selection;
+    if (['.', 'staged', 'working'].includes(targetCommitish)) {
+      return `${base}:${targetCommitish}`;
+    }
+    return `${base}:${await this.git.revparse([targetCommitish])}`;
   }
 
   async getDefaultBranch(): Promise<string | null> {
