@@ -496,22 +496,40 @@ describe('App Component - Clear Comments Functionality', () => {
   });
 });
 
-describe('App Component - Heartbeat Connection', () => {
+describe('App Component - Heartbeat', () => {
+  const mockGlobalFetch = vi.mocked(global.fetch);
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockComments = [];
     mockConfirm.mockReturnValue(false);
-    mockFetch(mockDiffResponse);
+    mockFetch({ ...mockDiffResponse, keepAlive: false });
   });
 
-  it('uses the direct API url for heartbeat when configured in development', async () => {
+  it('pings with short POST requests instead of opening an SSE connection', async () => {
     vi.stubEnv('VITE_DIFIT_API_URL', 'http://localhost:4969');
 
     renderApp();
 
     await waitFor(() => {
-      expect(MockEventSource.instances[0]?.url).toBe('http://localhost:4969/api/heartbeat');
+      expect(mockGlobalFetch).toHaveBeenCalledWith(
+        'http://localhost:4969/api/heartbeat',
+        expect.objectContaining({ method: 'POST' }),
+      );
     });
+    expect(MockEventSource.instances.some((es) => es.url.includes('/api/heartbeat'))).toBe(false);
+  });
+
+  it('does not ping or watch when keepAlive is on and watching is off', async () => {
+    mockFetch({ ...mockDiffResponse, keepAlive: true, watchEnabled: false });
+
+    renderApp();
+
+    await screen.findByText(/files viewed/);
+    expect(mockGlobalFetch.mock.calls.some(([url]) => String(url).includes('/api/heartbeat'))).toBe(
+      false,
+    );
+    expect(MockEventSource.instances).toHaveLength(0);
   });
 });
 

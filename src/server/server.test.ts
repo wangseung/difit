@@ -1575,71 +1575,89 @@ describe('Server Integration Tests', () => {
       expect(port).toBeGreaterThanOrEqual(4966);
     });
 
-    it('does not call process.exit on client disconnect when keepAlive is true', async () => {
+    const sendHeartbeat = (port: number, path: string, clientId: string) =>
+      fetch(`http://localhost:${port}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: clientId,
+      });
+
+    it('does not call process.exit when the last client closes and keepAlive is true', async () => {
       const { port, server } = await startServer({
         selection: { targetCommitish: 'HEAD', baseCommitish: 'HEAD^' },
         keepAlive: true,
         preferredPort: 9070,
+        clientCloseGraceMs: 20,
       });
       servers.push(server);
 
-      // Connect to heartbeat SSE endpoint and then abort
-      const controller = new AbortController();
-      const responsePromise = fetch(`http://localhost:${port}/api/heartbeat`, {
-        signal: controller.signal,
-      });
+      await sendHeartbeat(port, '/api/heartbeat', 'tab-1');
+      await sendHeartbeat(port, '/api/heartbeat/close', 'tab-1');
+      await new Promise((resolve) => setTimeout(resolve, 150));
 
-      // Wait for the connection to be established
-      const response = await responsePromise.catch(() => null);
-      if (response) {
-        // Start reading the stream to ensure connection is established
-        const reader = response.body?.getReader();
-        if (reader) {
-          await reader.read(); // Read the initial "connected" message
-        }
-      }
-
-      // Disconnect by aborting
-      controller.abort();
-
-      // Wait for the server's close handler + setTimeout(100ms) to run
-      await new Promise((resolve) => setTimeout(resolve, 300));
-
-      // With keepAlive, process.exit should NOT have been called
       expect(process.exit).not.toHaveBeenCalled();
     });
 
-    it('calls process.exit on client disconnect when keepAlive is false', async () => {
+    it('calls process.exit when the last client closes and keepAlive is false', async () => {
       const { port, server } = await startServer({
         selection: { targetCommitish: 'HEAD', baseCommitish: 'HEAD^' },
         keepAlive: false,
         preferredPort: 9080,
+        clientCloseGraceMs: 20,
       });
       servers.push(server);
 
-      // Connect to heartbeat SSE endpoint and then abort
-      const controller = new AbortController();
-      const responsePromise = fetch(`http://localhost:${port}/api/heartbeat`, {
-        signal: controller.signal,
-      });
+      await sendHeartbeat(port, '/api/heartbeat', 'tab-1');
+      await sendHeartbeat(port, '/api/heartbeat/close', 'tab-1');
+      await new Promise((resolve) => setTimeout(resolve, 150));
 
-      // Wait for the connection to be established
-      const response = await responsePromise.catch(() => null);
-      if (response) {
-        const reader = response.body?.getReader();
-        if (reader) {
-          await reader.read(); // Read the initial "connected" message
-        }
-      }
-
-      // Disconnect by aborting
-      controller.abort();
-
-      // Wait for the server's close handler + setTimeout(100ms) to run
-      await new Promise((resolve) => setTimeout(resolve, 300));
-
-      // Without keepAlive, process.exit SHOULD have been called
       expect(process.exit).toHaveBeenCalledWith(0);
+    });
+
+    it('keeps running while another client is still alive', async () => {
+      const { port, server } = await startServer({
+        selection: { targetCommitish: 'HEAD', baseCommitish: 'HEAD^' },
+        keepAlive: false,
+        preferredPort: 9081,
+        clientCloseGraceMs: 20,
+      });
+      servers.push(server);
+
+      await sendHeartbeat(port, '/api/heartbeat', 'tab-1');
+      await sendHeartbeat(port, '/api/heartbeat', 'tab-2');
+      await sendHeartbeat(port, '/api/heartbeat/close', 'tab-1');
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      expect(process.exit).not.toHaveBeenCalled();
+    });
+
+    it('exits when a client goes silent past the timeout', async () => {
+      const { port, server } = await startServer({
+        selection: { targetCommitish: 'HEAD', baseCommitish: 'HEAD^' },
+        keepAlive: false,
+        preferredPort: 9082,
+        clientTimeoutMs: 60,
+      });
+      servers.push(server);
+
+      await sendHeartbeat(port, '/api/heartbeat', 'tab-1');
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      expect(process.exit).toHaveBeenCalledWith(0);
+    });
+
+    it('exposes keepAlive and watchEnabled in the diff response', async () => {
+      const { port, server } = await startServer({
+        selection: { targetCommitish: 'HEAD', baseCommitish: 'HEAD^' },
+        keepAlive: true,
+        preferredPort: 9083,
+      });
+      servers.push(server);
+
+      const data = (await (await fetch(`http://localhost:${port}/api/diff`)).json()) as any;
+
+      expect(data.keepAlive).toBe(true);
+      expect(data.watchEnabled).toBe(false);
     });
   });
 

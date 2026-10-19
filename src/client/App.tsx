@@ -40,6 +40,7 @@ import { useAppearanceSettings } from './hooks/useAppearanceSettings';
 import { useDiffComments } from './hooks/useDiffComments';
 import { useExpandedLines, type MergedChunk } from './hooks/useExpandedLines';
 import { useFileWatch } from './hooks/useFileWatch';
+import { useHeartbeat } from './hooks/useHeartbeat';
 import { useKeyboardNavigation } from './hooks/useKeyboardNavigation';
 import { useLazyDiffRendering } from './hooks/useLazyDiffRendering';
 import { useViewedFiles } from './hooks/useViewedFiles';
@@ -49,7 +50,6 @@ import { hasMultipleCommentAuthors } from './utils/commentAuthors';
 import { copyTextToClipboard } from './utils/clipboard';
 import { getFileElementId } from './utils/domUtils';
 import { findCommentPosition } from './utils/navigation/positionHelpers';
-import { resolveEventSourceUrl } from './utils/eventSourceUrl';
 import {
   EMPTY_MERGED_CHUNKS_STATE,
   buildMergedChunksState,
@@ -575,6 +575,7 @@ function App() {
   const { shouldReload, reload, watchState } = useFileWatch(
     handleWatchReload,
     handleCommentsChanged,
+    diffData?.watchEnabled === true,
   );
 
   // Track which file the mouse is over so `v` works without a cursor
@@ -1028,24 +1029,8 @@ function App() {
     };
   }, [getCommentApiUrl, hasBootstrappedComments, syncThreadsToServer, threads]);
 
-  // Establish SSE connection for tab close detection
-  useEffect(() => {
-    const eventSource = new EventSource(resolveEventSourceUrl('/api/heartbeat'));
-
-    eventSource.onopen = () => {
-      console.log('Connected to server heartbeat');
-    };
-
-    eventSource.onerror = () => {
-      console.log('Server connection lost');
-      eventSource.close();
-    };
-
-    // Cleanup on unmount
-    return () => {
-      eventSource.close();
-    };
-  }, []);
+  // Tab close detection (skipped with --keep-alive)
+  useHeartbeat(diffData?.keepAlive === false);
 
   const handleAddComment = useCallback(
     (

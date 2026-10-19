@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { DiffMode, type ClientWatchState, type WatchEvent } from '../../types/watch.js';
 import { resolveEventSourceUrl } from '../utils/eventSourceUrl';
 
+const MIN_HIDDEN_MS_FOR_RELOAD = 10_000;
+
 interface FileWatchHook {
   shouldReload: boolean;
   isConnected: boolean;
@@ -14,6 +16,7 @@ interface FileWatchHook {
 export function useFileWatch(
   onReload?: () => Promise<void>,
   onCommentsChanged?: () => Promise<void>,
+  enabled = true,
 ): FileWatchHook {
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -179,12 +182,42 @@ export function useFileWatch(
     }
   };
 
-  // Initialize connection
+  // Hold the SSE connection only while watching is on and the tab is visible
+  // (browsers cap ~6 connections per host, so hidden tabs must not keep one)
   useEffect(() => {
-    connectToWatch();
+    let hiddenAt: number | null = null;
+    const sync = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAt ??= Date.now();
+        cleanup();
+        return;
+      }
+      const wasHiddenFor = hiddenAt === null ? 0 : Date.now() - hiddenAt;
+      hiddenAt = null;
+      if (enabled) {
+        reconnectAttemptsRef.current = 0;
+        connectToWatch();
+      }
+      if (wasHiddenFor === 0) return;
+      // Events were missed while disconnected: surface the reload prompt and refresh comments
+      if (enabled && wasHiddenFor >= MIN_HIDDEN_MS_FOR_RELOAD) {
+        setWatchState((prev) => ({
+          ...prev,
+          shouldReload: true,
+          lastChangeTime: new Date(),
+          lastChangeType: 'file',
+        }));
+      }
+      void onCommentsChanged?.();
+    };
 
-    return cleanup;
-  }, [connectToWatch]);
+    if (enabled && document.visibilityState === 'visible') connectToWatch();
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      document.removeEventListener('visibilitychange', sync);
+      cleanup();
+    };
+  }, [enabled, connectToWatch, onCommentsChanged]);
 
   // Cleanup on unmount
   useEffect(() => {

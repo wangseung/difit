@@ -58,6 +58,8 @@ export interface DiffResponse {
   requestedTargetCommitish?: string;
   requestedBaseMode?: BaseMode;
   clearComments?: boolean;
+  keepAlive?: boolean;
+  watchEnabled?: boolean;
   repositoryId?: string;
   commentImports?: CommentImport[];
   commentImportId?: string;

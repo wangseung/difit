@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DiffMode } from '../../types/watch.js';
 
@@ -366,6 +366,66 @@ describe('useFileWatch', () => {
 
       // Should show reconnecting status initially
       expect(result.current.watchState.connectionStatus).toBe('reconnecting');
+    });
+  });
+
+  describe('visibility and enabled', () => {
+    const setVisibility = (state: 'hidden' | 'visible') => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: state });
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+
+    afterEach(() => {
+      vi.useRealTimers();
+      setVisibility('visible');
+    });
+
+    it('does not open an EventSource when watching is disabled', () => {
+      renderHook(() => useFileWatch(undefined, undefined, false));
+
+      expect(MockEventSource.instances).toHaveLength(0);
+    });
+
+    it('closes while hidden and reconnects when visible again', () => {
+      renderHook(() => useFileWatch(undefined, undefined, true));
+      const first = MockEventSource.instances[0]!;
+
+      act(() => setVisibility('hidden'));
+      expect(first.close).toHaveBeenCalled();
+
+      act(() => setVisibility('visible'));
+      expect(MockEventSource.instances).toHaveLength(2);
+    });
+
+    it('prompts a reload and refreshes comments after a long hidden period', () => {
+      vi.useFakeTimers();
+      const onCommentsChanged = vi.fn().mockResolvedValue(undefined);
+      const { result } = renderHook(() => useFileWatch(undefined, onCommentsChanged, true));
+
+      act(() => setVisibility('hidden'));
+      act(() => {
+        vi.advanceTimersByTime(30_000);
+      });
+      act(() => setVisibility('visible'));
+
+      expect(result.current.shouldReload).toBe(true);
+      expect(onCommentsChanged).toHaveBeenCalled();
+    });
+
+    it('only refreshes comments when watching is disabled', () => {
+      vi.useFakeTimers();
+      const onCommentsChanged = vi.fn().mockResolvedValue(undefined);
+      const { result } = renderHook(() => useFileWatch(undefined, onCommentsChanged, false));
+
+      act(() => setVisibility('hidden'));
+      act(() => {
+        vi.advanceTimersByTime(30_000);
+      });
+      act(() => setVisibility('visible'));
+
+      expect(result.current.shouldReload).toBe(false);
+      expect(onCommentsChanged).toHaveBeenCalled();
+      expect(MockEventSource.instances).toHaveLength(0);
     });
   });
 

@@ -10,7 +10,7 @@ import open from 'open';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { validateDiffArguments } from '../cli/utils.js';
-import { type DiffMode } from '../types/watch.js';
+import { DiffMode } from '../types/watch.js';
 import { formatCommentsOutput } from '../utils/commentFormatting.js';
 import {
   mergeCommentImports,
@@ -58,6 +58,9 @@ interface ServerOptions {
   clearComments?: boolean;
   commentImports?: CommentImport[];
   keepAlive?: boolean;
+  // Overridable so tests don't wait out the real idle timers
+  clientTimeoutMs?: number;
+  clientCloseGraceMs?: number;
   diffMode?: DiffMode;
   repoPath?: string;
   reposRoot?: string;
@@ -138,6 +141,8 @@ export async function startServer(
       : undefined;
   let parser = new GitDiffParser(repositoryPath);
   const fileWatcher = new FileWatcherService();
+  // Clients only open the watch SSE when this is true (one long-lived connection per visible tab)
+  let watchEnabled = false;
   const generatedStatusCache = new Map<
     string,
     { value: GeneratedStatusResponse; expiresAt: number }
@@ -369,6 +374,8 @@ export async function startServer(
       requestedTargetCommitish,
       requestedBaseMode,
       clearComments: options.clearComments,
+      keepAlive: Boolean(options.keepAlive),
+      watchEnabled,
       repositoryId,
       commentImports: shouldIncludeCommentImports ? initialCommentImports : undefined,
       commentImportId: shouldIncludeCommentImports ? commentImportId : undefined,
@@ -447,6 +454,7 @@ export async function startServer(
           options.contextLines,
         );
         await fileWatcher.stop();
+        watchEnabled = false;
         parser = nextParser;
         repositoryPath = resolve(target.path);
         repositoryId = createHash('sha256').update(repositoryPath).digest('hex');
@@ -1108,43 +1116,54 @@ export async function startServer(
     });
   });
 
-  // SSE endpoint to detect when tab is closed
-  app.get('/api/heartbeat', (req, res) => {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
+  // Tab liveness: short POST pings instead of a long-lived SSE per tab (browsers allow ~6 connections per host)
+  const clientTimeoutMs = options.clientTimeoutMs ?? 90_000; // background tabs throttle timers to ~1/min
+  const clientCloseGraceMs = options.clientCloseGraceMs ?? 5_000; // lets a reload re-register first
+  const liveClients = new Map<string, number>();
+  let hadClient = false;
+
+  function shutdownIfIdle() {
+    if (options.keepAlive || !hadClient) return;
+    const now = Date.now();
+    for (const [id, lastSeen] of liveClients) {
+      if (now - lastSeen > clientTimeoutMs) liveClients.delete(id);
+    }
+    if (liveClients.size > 0 || now - lastRepoSwitchAt < 10_000) return;
+
+    console.log('Client disconnected, shutting down server...');
+    void fileWatcher.stop().finally(() => {
+      outputFinalComments();
+      process.exit(0);
     });
+  }
 
-    // Send initial heartbeat
-    res.write('data: connected\n\n');
+  if (!options.keepAlive) {
+    setInterval(shutdownIfIdle, Math.max(1, Math.min(15_000, clientTimeoutMs / 2))).unref();
+  }
 
-    // Send heartbeat every 5 seconds
-    const heartbeatInterval = setInterval(() => {
-      res.write('data: heartbeat\n\n');
-    }, 5000);
+  function readClientId(body: unknown): string | undefined {
+    const id: unknown =
+      typeof body === 'string' ? body : (body as { clientId?: unknown })?.clientId;
+    return typeof id === 'string' && id.length > 0 && id.length <= 64 ? id : undefined;
+  }
 
-    // When client disconnects (tab closed, navigation, etc.)
-    req.on('close', () => {
-      clearInterval(heartbeatInterval);
-      if (options.keepAlive) {
-        console.log('Client disconnected, but server is staying alive (--keep-alive)');
-        console.log('Press Ctrl+C to stop the server');
-      } else {
-        // Add a small delay to ensure any pending sendBeacon requests are processed
-        setTimeout(async () => {
-          if (Date.now() - lastRepoSwitchAt < 10_000) return;
-          console.log('Client disconnected, shutting down server...');
+  app.post('/api/heartbeat', (req, res) => {
+    const clientId = readClientId(req.body);
+    if (clientId) {
+      liveClients.set(clientId, Date.now());
+      hadClient = true;
+    }
+    res.sendStatus(204);
+  });
 
-          // Stop file watcher
-          await fileWatcher.stop();
-
-          outputFinalComments();
-          process.exit(0);
-        }, 100);
-      }
-    });
+  // Sent via sendBeacon on pagehide
+  app.post('/api/heartbeat/close', (req, res) => {
+    const clientId = readClientId(req.body);
+    if (clientId) {
+      liveClients.delete(clientId);
+      setTimeout(shutdownIfIdle, clientCloseGraceMs).unref();
+    }
+    res.sendStatus(204);
   });
 
   // Always runs in production mode when distributed as a CLI tool
@@ -1192,6 +1211,7 @@ export async function startServer(
   if (options.diffMode) {
     try {
       await fileWatcher.start(options.diffMode, repositoryPath, 300, invalidateCache);
+      watchEnabled = options.diffMode !== DiffMode.SPECIFIC;
     } catch (error) {
       console.warn('⚠️  File watcher failed to start:', error);
       console.warn('   Continuing without file watching...');
