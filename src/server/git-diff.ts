@@ -804,17 +804,22 @@ export class GitDiffParser {
     currentTarget?: string,
   ): Promise<{
     branches: Array<{ name: string; current: boolean }>;
+    remoteBranches: string[];
     commits: Array<{ hash: string; shortHash: string; message: string }>;
     originDefaultBranch?: string;
     resolvedBase?: string;
     resolvedTarget?: string;
   }> {
-    const [branchResult, logResult, defaultBranch, originDefaultBranch] = await Promise.all([
-      this.git.branchLocal(),
-      this.git.log({ maxCount: 20 }),
-      this.getDefaultBranch(),
-      this.getOriginDefaultBranch(),
-    ]);
+    const [branchResult, remoteResult, logResult, defaultBranch, originDefaultBranch] =
+      await Promise.all([
+        this.git.branchLocal(),
+        this.git.branch(['-r']),
+        this.git.log({ maxCount: 20 }),
+        this.getDefaultBranch(),
+        this.getOriginDefaultBranch(),
+      ]);
+
+    const remoteBranches = remoteResult.all.filter((name) => !name.includes('->')).sort();
 
     const branches = Object.entries(branchResult.branches).map(([name, data]) => ({
       name,
@@ -860,10 +865,26 @@ export class GitDiffParser {
 
     return {
       branches,
+      remoteBranches,
       commits,
       originDefaultBranch: originDefaultBranch ?? undefined,
       resolvedBase,
       resolvedTarget,
     };
+  }
+
+  // Commits reachable from target but not from merge-base(target, base), oldest first
+  async getRangeCommits(
+    base: string,
+    target: string,
+  ): Promise<Array<{ hash: string; shortHash: string; message: string }>> {
+    const targetRef = getMergeBaseTargetRef(target);
+    const mergeBase = (await this.git.raw(['merge-base', targetRef, base])).trim();
+    const log = await this.git.log([`${mergeBase}..${targetRef}`, '--max-count=500']);
+    return [...log.all].reverse().map((commit) => ({
+      hash: commit.hash,
+      shortHash: commit.hash.substring(0, 7),
+      message: commit.message,
+    }));
   }
 }

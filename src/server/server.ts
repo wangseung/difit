@@ -9,6 +9,7 @@ import open from 'open';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+import { validateDiffArguments } from '../cli/utils.js';
 import { type DiffMode } from '../types/watch.js';
 import { formatCommentsOutput } from '../utils/commentFormatting.js';
 import {
@@ -418,11 +419,17 @@ export async function startServer(
     }
 
     try {
-      const { branches, commits, originDefaultBranch, resolvedBase, resolvedTarget } =
-        await parser.getRevisionOptions(
-          currentSelection.baseCommitish,
-          currentSelection.targetCommitish,
-        );
+      const {
+        branches,
+        remoteBranches,
+        commits,
+        originDefaultBranch,
+        resolvedBase,
+        resolvedTarget,
+      } = await parser.getRevisionOptions(
+        currentSelection.baseCommitish,
+        currentSelection.targetCommitish,
+      );
 
       const response: RevisionsResponse = {
         specialOptions: [
@@ -431,6 +438,7 @@ export async function startServer(
           { value: 'working', label: 'Working Directory' },
         ],
         branches,
+        remoteBranches,
         commits,
         originDefaultBranch,
         resolvedBase,
@@ -441,6 +449,27 @@ export async function startServer(
     } catch (error) {
       console.error('Error fetching revisions:', error);
       res.status(500).json({ error: 'Failed to fetch revisions' });
+    }
+  });
+
+  app.get('/api/range-commits', async (req, res) => {
+    const base = req.query.base;
+    const target = req.query.target;
+    if (options.stdinDiff || typeof base !== 'string' || typeof target !== 'string') {
+      res.status(400).json({ error: 'base and target are required' });
+      return;
+    }
+    const validation = validateDiffArguments(target, base);
+    if (!validation.valid) {
+      res.status(400).json({ error: validation.error });
+      return;
+    }
+
+    try {
+      res.json({ commits: await parser.getRangeCommits(base, target) });
+    } catch (error) {
+      console.error('Error fetching range commits:', error);
+      res.status(500).json({ error: 'Failed to fetch range commits' });
     }
   });
 

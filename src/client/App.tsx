@@ -23,6 +23,7 @@ import {
 import { Checkbox } from './components/Checkbox';
 import { CommentsDropdown } from './components/CommentsDropdown';
 import { CommentsListModal } from './components/CommentsListModal';
+import { DiffNavBar } from './components/DiffNavBar';
 import { DiffQuickMenu } from './components/DiffQuickMenu';
 import { DiffViewer } from './components/DiffViewer';
 import { FileList } from './components/FileList';
@@ -180,7 +181,7 @@ function App() {
   }, [resolvedSelection]);
 
   const { settings, updateSettings } = useAppearanceSettings();
-  const { isMobile, isDesktop } = useViewport();
+  const { isMobile } = useViewport();
 
   // New diff-aware comment system
   const {
@@ -1353,7 +1354,7 @@ function App() {
                   resolvedTargetRevision={resolvedTargetRevision}
                   onSelectDiff={(selection) => void handleRevisionChange(selection)}
                   onOpenAdvanced={() => setIsRevisionModalOpen(true)}
-                  compact={!isDesktop}
+                  compact
                 />
               ) : (
                 <span className="text-xs">
@@ -1375,6 +1376,13 @@ function App() {
             </div>
           </div>
         </header>
+        {revisionOptions && (
+          <DiffNavBar
+            options={revisionOptions}
+            selection={selectedRevision}
+            onSelectDiff={(selection) => void handleRevisionChange(selection)}
+          />
+        )}
         {revisionOptions && (
           <RevisionDetailModal
             key={isRevisionModalOpen ? getDiffSelectionKey(selectedRevision) : 'closed'}
@@ -1473,7 +1481,7 @@ function App() {
 
           <main
             ref={diffScrollContainerRef}
-            className={`flex-1 overflow-y-auto ${showMobileCommentsBar ? 'pb-16' : ''}`}
+            className={`flex-1 overflow-y-auto pr-4 ${showMobileCommentsBar ? 'pb-16' : ''}`}
           >
             {diffData.files.map((file, fileIndex) => {
               const fileThreads = threadsByFile.get(file.path) ?? EMPTY_COMMENT_THREADS;

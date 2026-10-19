@@ -1454,6 +1454,29 @@ index abc123..def456 100644
     });
   });
 
+  describe('getRangeCommits', () => {
+    it('lists commits after the merge-base, oldest first', async () => {
+      (parser as any).git.raw.mockResolvedValue('mb123\n');
+      (parser as any).git.log = vi.fn().mockResolvedValue({
+        all: [
+          { hash: 'b'.repeat(40), message: 'newer' },
+          { hash: 'a'.repeat(40), message: 'older' },
+        ],
+      });
+
+      const commits = await parser.getRangeCommits('origin/develop', 'HEAD');
+
+      expect((parser as any).git.raw).toHaveBeenCalledWith([
+        'merge-base',
+        'HEAD',
+        'origin/develop',
+      ]);
+      expect((parser as any).git.log).toHaveBeenCalledWith(['mb123..HEAD', '--max-count=500']);
+      expect(commits.map((c) => c.message)).toEqual(['older', 'newer']);
+      expect(commits[0]?.shortHash).toBe('aaaaaaa');
+    });
+  });
+
   describe('parseDiff', () => {
     it('marks files with .gitattributes linguist-generated=true as generated', async () => {
       const file = 'apps/app/web/src/api/index.tsx';

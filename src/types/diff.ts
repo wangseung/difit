@@ -219,6 +219,7 @@ export interface CommitInfo {
 export interface RevisionsResponse {
   specialOptions: RevisionOption[];
   branches: BranchInfo[];
+  remoteBranches?: string[];
   commits: CommitInfo[];
   originDefaultBranch?: string;
   resolvedBase?: string;
