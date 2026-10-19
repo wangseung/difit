@@ -25,6 +25,7 @@ import { CommentsDropdown } from './components/CommentsDropdown';
 import { CommentsListModal } from './components/CommentsListModal';
 import { DiffNavBar } from './components/DiffNavBar';
 import { DiffQuickMenu } from './components/DiffQuickMenu';
+import { RepoSwitcher } from './components/RepoSwitcher';
 import { DiffViewer } from './components/DiffViewer';
 import { FileList } from './components/FileList';
 import { GitHubIcon } from './components/GitHubIcon';
@@ -1316,6 +1317,7 @@ function App() {
                   onViewAll={() => setIsCommentsListOpen(true)}
                 />
               )}
+              <RepoSwitcher />
               <div className="flex flex-col gap-1 items-center">
                 <div className="text-xs relative">
                   {viewedFiles.size === diffData.files.length

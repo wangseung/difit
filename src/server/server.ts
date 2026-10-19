@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { type Server } from 'http';
-import { join, dirname, isAbsolute, resolve, sep } from 'path';
+import { basename, join, dirname, isAbsolute, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 
 import express, { type Express } from 'express';
@@ -28,6 +28,7 @@ import { getFileExtension } from '../utils/fileUtils.js';
 
 import { FileWatcherService } from './file-watcher.js';
 import { GitDiffParser } from './git-diff.js';
+import { listRepos, resolveReposRoot } from './repos.js';
 import { parseUserSettingsPatch, readUserConfig, updateUserClientSettings } from './user-config.js';
 
 import {
@@ -59,6 +60,7 @@ interface ServerOptions {
   keepAlive?: boolean;
   diffMode?: DiffMode;
   repoPath?: string;
+  reposRoot?: string;
   contextLines?: number;
 }
 
@@ -126,15 +128,15 @@ export async function startServer(
   options: ServerOptions,
 ): Promise<{ port: number; url: string; isEmpty?: boolean; server?: Server }> {
   const app = express();
-  const repositoryPath = resolve(options.repoPath ?? process.cwd());
-  const repositoryId = createHash('sha256').update(repositoryPath).digest('hex');
-  const initialCommentImports = options.commentImports || [];
-  const initialSelection = options.selection ?? createDiffSelection('', '');
+  let repositoryPath = resolve(options.repoPath ?? process.cwd());
+  let repositoryId = createHash('sha256').update(repositoryPath).digest('hex');
+  let initialCommentImports = options.commentImports || [];
+  let initialSelection = options.selection ?? createDiffSelection('', '');
   const commentImportId =
     initialCommentImports.length > 0
       ? createHash('sha256').update(serializeCommentImports(initialCommentImports)).digest('hex')
       : undefined;
-  const parser = new GitDiffParser(repositoryPath);
+  let parser = new GitDiffParser(repositoryPath);
   const fileWatcher = new FileWatcherService();
   const generatedStatusCache = new Map<
     string,
@@ -247,10 +249,13 @@ export async function startServer(
     };
   }
 
+  // Sessions are scoped per repository so switching repos never mixes comment threads
+  const commentSessionKey = (selection: DiffSelection) =>
+    `${repositoryId}:${createCommentSessionKey(selection)}`;
   const commentSessions = new Map<string, CommentSessionState>();
   const initialCommentThreads = mergeCommentImports([], initialCommentImports).threads;
   if (initialCommentThreads.length > 0) {
-    commentSessions.set(createCommentSessionKey(currentCommentSelection), {
+    commentSessions.set(commentSessionKey(currentCommentSelection), {
       threads: initialCommentThreads,
       version: 1,
     });
@@ -277,7 +282,7 @@ export async function startServer(
   }
 
   function getOrCreateCommentSession(selection: DiffSelection): CommentSessionState {
-    const key = createCommentSessionKey(selection);
+    const key = commentSessionKey(selection);
     const existing = commentSessions.get(key);
     if (existing) {
       return existing;
@@ -408,6 +413,99 @@ export async function startServer(
     } catch (error) {
       console.error('Error fetching generated status:', error);
       res.status(500).json({ error: 'Failed to get generated status' });
+    }
+  });
+
+  const reposRoot = resolveReposRoot(options.reposRoot);
+  // A repo switch reloads the page, which drops the heartbeat; don't treat that as the tab closing
+  let lastRepoSwitchAt = 0;
+
+  async function switchRepository(name: string): Promise<boolean> {
+    const target = (await listRepos(reposRoot)).find((repo) => repo.name === name);
+    if (!target) return false;
+    if (resolve(target.path) === repositoryPath) return true;
+
+    const nextParser = new GitDiffParser(target.path);
+    if (!(await nextParser.validateCommit('HEAD'))) return false;
+
+    // Default comparison: <origin default branch> ← HEAD (merge-base), then local main/master, then HEAD^..HEAD
+    const { branches, originDefaultBranch } = await nextParser.getRevisionOptions();
+    const localDefault = branches.find((b) => b.name === 'main' || b.name === 'master')?.name;
+    const candidates = [
+      ...(originDefaultBranch
+        ? [createDiffSelection(originDefaultBranch, 'HEAD', 'merge-base')]
+        : []),
+      ...(localDefault ? [createDiffSelection(localDefault, 'HEAD', 'merge-base')] : []),
+      createDiffSelection('HEAD^', 'HEAD'),
+      createDiffSelection('HEAD', '.', 'merge-base'),
+    ];
+    for (const selection of candidates) {
+      try {
+        const diffData = await nextParser.parseDiff(
+          selection,
+          initialIgnoreWhitespace,
+          options.contextLines,
+        );
+        await fileWatcher.stop();
+        parser = nextParser;
+        repositoryPath = resolve(target.path);
+        repositoryId = createHash('sha256').update(repositoryPath).digest('hex');
+        lastRepoSwitchAt = Date.now();
+        initialSelection = selection;
+        initialDiffData = diffData;
+        initialCommentImports = [];
+        currentSelection = selection;
+        currentCommentSelection = createResolvedCommentSelection(diffData, selection, false);
+        diffDataCache.clear();
+        generatedStatusCache.clear();
+        setCachedDiffResponse(
+          diffDataCache,
+          createDiffCacheKey(selection, initialIgnoreWhitespace),
+          diffData,
+        );
+        return true;
+      } catch {
+        // Try the next fallback selection.
+      }
+    }
+    return false;
+  }
+
+  // `/?repo=<name>` (bookmark/reload) switches the repository before the page is served
+  app.use(async (req, _res, next) => {
+    if (req.path === '/' && typeof req.query.repo === 'string' && !options.stdinDiff) {
+      await switchRepository(req.query.repo).catch(() => false);
+    }
+    next();
+  });
+
+  app.get('/api/repos', async (_req, res) => {
+    if (options.stdinDiff) {
+      res.status(400).json({ error: 'Repository switching not available for stdin diff' });
+      return;
+    }
+    const [repos, config] = await Promise.all([listRepos(reposRoot), readUserConfig()]);
+    const favorites = Array.isArray(config.client.favoriteRepos)
+      ? config.client.favoriteRepos.filter((name): name is string => typeof name === 'string')
+      : [];
+    res.json({ current: basename(repositoryPath), repos, favorites });
+  });
+
+  app.post('/api/switch-repo', async (req, res) => {
+    const name: unknown = (req.body as { name?: unknown } | undefined)?.name;
+    if (options.stdinDiff || typeof name !== 'string') {
+      res.status(400).json({ error: 'Invalid repository' });
+      return;
+    }
+    try {
+      if (await switchRepository(name)) {
+        res.json({ current: basename(repositoryPath) });
+      } else {
+        res.status(404).json({ error: 'Repository not found or has no usable diff' });
+      }
+    } catch (error) {
+      console.error('Error switching repository:', error);
+      res.status(500).json({ error: 'Failed to switch repository' });
     }
   });
 
@@ -1036,6 +1134,7 @@ export async function startServer(
       } else {
         // Add a small delay to ensure any pending sendBeacon requests are processed
         setTimeout(async () => {
+          if (Date.now() - lastRepoSwitchAt < 10_000) return;
           console.log('Client disconnected, shutting down server...');
 
           // Stop file watcher

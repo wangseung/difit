@@ -86,6 +86,15 @@ describe('user-config', () => {
       expect(stored).toEqual({ version: 1, client: { sidebarOpen: false } });
     });
 
+    it('survives concurrent writes within one process', async () => {
+      await Promise.all([
+        updateUserClientSettings({ favoriteRepos: ['a'] }, configPath),
+        updateUserClientSettings({ favoriteRepos: ['a', 'b'] }, configPath),
+      ]);
+
+      expect((await readUserConfig(configPath)).client.favoriteRepos).toBeDefined();
+    });
+
     it('shallow-merges the patch into existing settings', async () => {
       await updateUserClientSettings({ diffViewMode: 'split', sidebarWidth: 300 }, configPath);
       const config = await updateUserClientSettings({ sidebarWidth: 400 }, configPath);

@@ -90,6 +90,7 @@ interface CliOptions {
   background?: boolean;
   context?: number;
   mergeBase?: boolean;
+  reposRoot?: string;
 }
 
 const program = new Command();
@@ -123,6 +124,11 @@ program
   .option('--include-untracked', 'automatically include untracked files in diff')
   .option('--keep-alive', 'keep server running even after browser disconnects')
   .option('--background', 'keep the server running in the background and output JSON info')
+  .option(
+    '--repos-root <dir>',
+    'directory whose git repositories can be switched in the UI',
+    '~/Desktop/git',
+  )
   .option('--context <lines>', 'number of context lines shown around each change', parseInt)
   .option(
     '--merge-base',
@@ -297,6 +303,7 @@ program
         contextLines: options.context,
         diffMode: determineDiffMode(selection, compareWith),
         repoPath,
+        reposRoot: options.reposRoot,
         ...(commentImports.length > 0 ? { commentImports } : {}),
       });
 

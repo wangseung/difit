@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
@@ -71,7 +72,7 @@ export async function updateUserClientSettings(
 
   await fs.mkdir(dirname(path), { recursive: true });
   // Write via a temp file + rename so a crash mid-write can't corrupt the config.
-  const tmpPath = `${path}.${process.pid}.tmp`;
+  const tmpPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   await fs.writeFile(tmpPath, serialized, 'utf-8');
   await fs.rename(tmpPath, path);
   return next;
