@@ -30,6 +30,8 @@ interface Range {
 const NAV_BUTTON =
   'flex items-center gap-1 px-2 py-1 text-xs bg-github-bg-tertiary border border-github-border hover:border-github-text-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-github-border';
 
+const SEGMENT_ACTIVE = 'bg-github-bg-primary text-github-text-primary border-github-text-secondary';
+
 const commitSelection = (commit: CommitInfo) =>
   createDiffSelection(`${commit.shortHash}^`, commit.shortHash);
 
@@ -37,13 +39,14 @@ export function DiffNavBar({ options, selection, onSelectDiff }: DiffNavBarProps
   const currentBranch = options.branches.find((branch) => branch.current)?.name;
   const [range, setRange] = useState<Range>(() => ({
     base: options.originDefaultBranch ?? selection.baseCommitish,
-    target: selection.targetCommitish,
+    target: currentBranch ?? selection.targetCommitish,
   }));
   const [commits, setCommits] = useState<CommitInfo[]>([]);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [query, setQuery] = useState('');
 
-  // Follow merge-base selections made elsewhere (CLI args, detailed modal)
+  // Follow merge-base selections made elsewhere (CLI args, detailed modal).
+  // Commit selections are direct (`hash^..hash`), so stepping through commits never moves the range.
   useEffect(() => {
     if (selection.baseMode === 'merge-base') {
       setRange({ base: selection.baseCommitish, target: selection.targetCommitish });
@@ -67,6 +70,7 @@ export function DiffNavBar({ options, selection, onSelectDiff }: DiffNavBarProps
   );
   const activeCommit = commits[index];
   const isAll = diffSelectionsEqual(selection, allSelection);
+  const isByCommit = index >= 0;
 
   const { refs, floatingStyles, context } = useFloating({
     open: isPickerOpen,
@@ -126,26 +130,47 @@ export function DiffNavBar({ options, selection, onSelectDiff }: DiffNavBarProps
       </div>
 
       <div className="flex items-center gap-2 min-w-0">
-        <div className="flex shrink-0">
+        <div className="flex shrink-0" role="group" aria-label="Diff scope">
           <button
             type="button"
-            className={`${NAV_BUTTON} rounded-l`}
-            disabled={index <= 0}
-            onClick={() => goTo(index - 1)}
+            className={`${NAV_BUTTON} rounded-l ${isAll ? SEGMENT_ACTIVE : ''}`}
+            aria-pressed={isAll}
+            onClick={() => onSelectDiff(allSelection)}
           >
-            <ChevronLeft size={12} /> Prev
+            All changes
           </button>
           <button
             type="button"
-            className={`${NAV_BUTTON} rounded-r border-l-0`}
-            disabled={commits.length === 0 || index === commits.length - 1}
-            onClick={() => goTo(index + 1)}
+            className={`${NAV_BUTTON} rounded-r border-l-0 ${isByCommit ? SEGMENT_ACTIVE : ''}`}
+            aria-pressed={isByCommit}
+            disabled={commits.length === 0}
+            onClick={() => !isByCommit && goTo(0)}
           >
-            Next <ChevronRight size={12} />
+            By commit
           </button>
         </div>
-        {activeCommit ? (
+        {isByCommit && activeCommit ? (
           <>
+            <div className="flex shrink-0">
+              <button
+                type="button"
+                className={`${NAV_BUTTON} rounded-l`}
+                aria-label="Previous commit"
+                disabled={index <= 0}
+                onClick={() => goTo(index - 1)}
+              >
+                <ChevronLeft size={12} /> Prev
+              </button>
+              <button
+                type="button"
+                className={`${NAV_BUTTON} rounded-r border-l-0`}
+                aria-label="Next commit"
+                disabled={index === commits.length - 1}
+                onClick={() => goTo(index + 1)}
+              >
+                Next <ChevronRight size={12} />
+              </button>
+            </div>
             <code className="shrink-0 text-github-text-primary">{activeCommit.shortHash}</code>
             <span className="truncate text-github-text-secondary" title={activeCommit.message}>
               {activeCommit.message}
@@ -156,17 +181,11 @@ export function DiffNavBar({ options, selection, onSelectDiff }: DiffNavBarProps
           </>
         ) : (
           <span className="text-github-text-secondary">
-            {isAll ? `All commits (${commits.length})` : 'Custom range'}
+            {isAll
+              ? `${commits.length} ${commits.length === 1 ? 'commit' : 'commits'}`
+              : 'Custom range'}
           </span>
         )}
-        <button
-          type="button"
-          className={`${NAV_BUTTON} rounded shrink-0`}
-          disabled={isAll}
-          onClick={() => onSelectDiff(allSelection)}
-        >
-          All commits
-        </button>
       </div>
 
       {isPickerOpen && (
